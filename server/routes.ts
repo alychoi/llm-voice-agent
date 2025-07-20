@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { llmService } from "./services/llm";
 import { twilioService } from "./services/twilio";
+import { conversationService } from "./services/conversation";
 import { insertCallSchema } from "@shared/schema";
 import { z } from "zod";
 
@@ -12,19 +13,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { phoneNumber, message } = insertCallSchema.parse(req.body);
       
-      // Mock response for scaffold
-      const mockCall = {
-        id: Date.now(),
+      // Create call record in database
+      const callRecord = await storage.createCall({
         phoneNumber,
         message: message || null,
-        status: "pending",
-        duration: 0,
-        twilioCallSid: null,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
+        status: "initiating"
+      });
 
-      res.json(mockCall);
+      // Initiate actual Twilio call
+      const callResult = await twilioService.initiateCall({
+        to: phoneNumber,
+        message: message || "Hello! I am your Neo scholarship interviewer. How are you doing?"
+      });
+
+      // Update call record with Twilio call SID
+      const updatedCall = await storage.updateCall(callRecord.id, {
+        twilioCallSid: callResult.callSid,
+        status: callResult.status
+      });
+
+      res.json(updatedCall);
     } catch (error: any) {
       console.error("Error initiating call:", error);
       res.status(500).json({ 
@@ -37,8 +45,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get all calls
   app.get("/api/calls", async (req, res) => {
     try {
-      // Mock empty calls array for scaffold
-      res.json([]);
+      const calls = await storage.getCalls();
+      res.json(calls);
     } catch (error) {
       console.error("Error fetching calls:", error);
       res.status(500).json({ message: "Failed to fetch calls" });
@@ -62,9 +70,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { CallSid, From, To } = req.body;
       console.log("Twilio webhook received:", { CallSid, From, To });
 
-      // Generate TwiML response with hardcoded message
-      const message = "Hello! This is a test call from the voice agent demo. Thank you for answering!";
-      const twiml = twilioService.generateTwiML(message);
+      // Generate initial greeting for Neo scholarship interview
+      const initialMessage = "Hello! I am your interviewer for the Neo Scholars program. How are you doing today?";
+      const twiml = twilioService.generateTwiML(initialMessage);
 
       res.type('text/xml');
       res.send(twiml);
@@ -82,15 +90,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       let responseMessage = "Thank you for your input!";
       
-      if (SpeechResult) {
-        // Get LLM response based on user input
-        const llmResponse = await llmService.getAgentReply([
-          { role: "user", content: SpeechResult }
-        ]);
-        responseMessage = llmResponse;
+      if (SpeechResult && SpeechResult.trim().length > 0) {
+        // Use conversation service to maintain state
+        responseMessage = await conversationService.generateResponse(CallSid, SpeechResult);
+        
+        // Log the conversation for debugging
+        console.log("User said:", SpeechResult);
+        console.log("AI responded:", responseMessage);
+        console.log("Turn count:", conversationService.getTurnCount(CallSid));
+        console.log("Call duration:", conversationService.getCallDuration(CallSid), "seconds");
+
+        // Broadcast transcript update to WebSocket clients
+        if ((global as any).wsService) {
+          (global as any).wsService.broadcastTranscriptUpdate(CallSid, {
+            speaker: "user",
+            content: SpeechResult,
+            timestamp: new Date()
+          });
+          
+          (global as any).wsService.broadcastTranscriptUpdate(CallSid, {
+            speaker: "agent",
+            content: responseMessage,
+            timestamp: new Date()
+          });
+        }
+      } else {
+        // No speech detected or empty result, ask user to repeat
+        responseMessage = "I didn't catch that. Could you please repeat what you said?";
+        console.log("No speech detected or empty result");
       }
 
       const twiml = twilioService.generateTwiML(responseMessage);
+      
+      // Debug: log the TwiML being sent
+      console.log("Generated TwiML:", twiml);
       
       res.type('text/xml');
       res.send(twiml);
@@ -105,6 +138,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { CallSid, CallStatus, CallDuration } = req.body;
       console.log("Twilio status callback:", { CallSid, CallStatus, CallDuration });
+
+      // Update call status in database
+      const call = await storage.getCallByTwilioSid(CallSid);
+      if (call) {
+        await storage.updateCall(call.id, {
+          status: CallStatus,
+          duration: CallDuration ? parseInt(CallDuration) : call.duration
+        });
+      }
 
       res.status(200).send("OK");
     } catch (error) {
@@ -130,6 +172,100 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get conversation transcript
+  app.get("/api/calls/:callId/transcript", async (req, res) => {
+    try {
+      const { callId } = req.params;
+      const transcript = conversationService.getConversationHistory(callId);
+      const turnCount = conversationService.getTurnCount(callId);
+      const duration = conversationService.getCallDuration(callId);
+
+      res.json({
+        callId,
+        transcript,
+        turnCount,
+        duration,
+        metrics: {
+          totalTurns: turnCount,
+          callDuration: duration,
+          averageTurnLength: transcript.length > 0 ? 
+            transcript.reduce((acc, turn) => acc + turn.content.length, 0) / transcript.length : 0
+        }
+      });
+    } catch (error) {
+      console.error("Error fetching transcript:", error);
+      res.status(500).json({ message: "Failed to fetch transcript" });
+    }
+  });
+
+  // End call manually
+  app.post("/api/calls/:callId/end", async (req, res) => {
+    try {
+      const { callId } = req.params;
+      conversationService.endCall(callId);
+      
+      // Broadcast call end to WebSocket clients
+      if ((global as any).wsService) {
+        (global as any).wsService.broadcastCallEnd(callId);
+      }
+
+      res.json({ message: "Call ended successfully" });
+    } catch (error) {
+      console.error("Error ending call:", error);
+      res.status(500).json({ message: "Failed to end call" });
+    }
+  });
+
+  // Send text message during call
+  app.post("/api/calls/:callId/send-text", async (req, res) => {
+    try {
+      const { callId } = req.params;
+      const { message } = req.body;
+
+      if (!message) {
+        return res.status(400).json({ message: "Message is required" });
+      }
+
+      // Add agent message to conversation
+      await conversationService.addTurn(callId, "agent", message);
+
+      // Broadcast to WebSocket clients
+      if ((global as any).wsService) {
+        (global as any).wsService.broadcastTranscriptUpdate(callId, {
+          speaker: "agent",
+          content: message,
+          timestamp: new Date()
+        });
+      }
+
+      res.json({ message: "Text sent successfully" });
+    } catch (error) {
+      console.error("Error sending text:", error);
+      res.status(500).json({ message: "Failed to send text" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
+
+// Enhanced webhook with conversation state
+// app.post("/api/twilio/webhook/gather", async (req, res) => {
+//   const { SpeechResult, CallSid } = req.body;
+  
+//   // 1. Get call from database
+//   const call = await storage.getCallByTwilioSid(CallSid);
+  
+//   // 2. Add user turn to conversation
+//   await conversationService.addTurn(call.id, "user", SpeechResult);
+  
+//   // 3. Generate AI response
+//   const response = await conversationService.generateResponse(call.id, SpeechResult);
+  
+//   // 4. Add agent turn to conversation
+//   await conversationService.addTurn(call.id, "agent", response);
+  
+//   // 5. Generate TwiML
+//   const twiml = twilioService.generateTwiML(response);
+//   res.type('text/xml').send(twiml);
+// });

@@ -31,7 +31,7 @@ export class TwilioService {
         callSid: call.sid,
         status: call.status
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error initiating Twilio call:", error);
       throw new Error(`Failed to initiate call: ${error.message}`);
     }
@@ -44,7 +44,7 @@ export class TwilioService {
         status: call.status,
         duration: call.duration ? parseInt(call.duration) : undefined
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error fetching call status:", error);
       throw new Error(`Failed to fetch call status: ${error.message}`);
     }
@@ -57,24 +57,22 @@ export class TwilioService {
       language: 'en-US'
     }, message);
     
-    // Add a gather for basic interaction
-    const gather = twiml.gather({
-      input: 'speech',
-      timeout: 10,
+    // Add a gather for speech input
+    twiml.gather({
+      input: ['speech'],
+      timeout: 30, // Longer timeout to allow for longer responses
       action: '/api/twilio/webhook/gather',
-      method: 'POST'
-    });
-    
-    gather.say({
-      voice: 'alice',
+      method: 'POST',
+      speechTimeout: '5', // Wait 5 seconds of silence before processing
+      enhanced: true, // Use enhanced speech recognition
       language: 'en-US'
-    }, 'Please say something, or press any key to continue.');
+    });
     
     // Fallback if no input
     twiml.say({
       voice: 'alice',
       language: 'en-US'
-    }, 'Thank you for using the voice agent demo. Goodbye!');
+    }, 'Thank you for using the Neo Scholars voice agent. Goodbye!');
     
     twiml.hangup();
     

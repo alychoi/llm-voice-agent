@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -11,6 +11,13 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Phone, Clock, Check, X, Database, Settings, FileText, PhoneCall } from "lucide-react";
 
+// TODO:
+// - Add a way to view the transcript of a call
+// - Add a way to view the conversation history
+// - Add a way to view the call logs
+// - Add a way to view the system status
+// - Add a way to view the configuration
+
 interface Call {
   id: number;
   phoneNumber: string;
@@ -20,6 +27,13 @@ interface Call {
   twilioCallSid: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+interface TranscriptTurn {
+  id: number;
+  speaker: "user" | "agent";
+  content: string;
+  timestamp: string;
 }
 
 interface SystemStatus {
@@ -146,6 +160,55 @@ export default function Home() {
     }
   };
 
+  // Add WebSocket connection for real-time updates
+  const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
+  const [activeCall, setActiveCall] = useState<Call | null>(null);
+  const [callMetrics, setCallMetrics] = useState({
+    turnCount: 0,
+    duration: 0
+  });
+
+  // WebSocket connection for live transcript
+  useEffect(() => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
+    
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+    };
+    
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'transcript_update') {
+          setTranscript(prev => [...prev, data.turn]);
+          setCallMetrics({
+            turnCount: data.turnCount,
+            duration: data.callDuration
+          });
+        } else if (data.type === 'call_ended') {
+          setActiveCall(null);
+          setTranscript([]);
+          setCallMetrics({ turnCount: 0, duration: 0 });
+        }
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
+      }
+    };
+    
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+    
+    ws.onclose = () => {
+      console.log('WebSocket disconnected');
+    };
+    
+    return () => {
+      ws.close();
+    };
+  }, []);
+
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Header */}
@@ -244,6 +307,81 @@ export default function Home() {
                 </form>
               </CardContent>
             </Card>
+
+            {/* Live Transcript */}
+            {transcript.length > 0 && (
+              <Card className="mb-6">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle>Live Transcript</CardTitle>
+                    <div className="flex items-center space-x-4">
+                      <span className="text-sm text-slate-500">
+                        Turn {callMetrics.turnCount}
+                      </span>
+                      <span className="text-sm text-slate-500">
+                        {Math.floor(callMetrics.duration / 60)}:{(callMetrics.duration % 60).toString().padStart(2, '0')}
+                      </span>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-3 max-h-64 overflow-y-auto">
+                    {transcript.map((turn, index) => (
+                      <div key={index} className={`flex ${turn.speaker === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-xs px-3 py-2 rounded-lg ${
+                          turn.speaker === 'user' 
+                            ? 'bg-blue-500 text-white' 
+                            : 'bg-slate-100 text-slate-800'
+                        }`}>
+                          <p className="text-sm">{turn.content}</p>
+                          <p className="text-xs opacity-70 mt-1">
+                            {new Date(turn.timestamp).toLocaleTimeString()}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Manual Controls */}
+            {activeCall && (
+              <Card className="mb-6">
+                <CardHeader>
+                  <CardTitle>Call Controls</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex space-x-4">
+                    <Button 
+                      variant="destructive"
+                      onClick={() => {
+                        // End call logic
+                        fetch(`/api/calls/${activeCall.id}/end`, { method: 'POST' });
+                      }}
+                    >
+                      End Call
+                    </Button>
+                    <Button 
+                      variant="outline"
+                      onClick={() => {
+                        // Send text logic
+                        const message = prompt("Enter message to send:");
+                        if (message) {
+                          fetch(`/api/calls/${activeCall.id}/send-text`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ message })
+                          });
+                        }
+                      }}
+                    >
+                      Send Text
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Call Logs */}
             <Card>
