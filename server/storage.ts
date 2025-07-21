@@ -9,6 +9,7 @@ export interface IStorage {
   getCallByTwilioSid(twilioSid: string): Promise<Call | undefined>;
   createCall(insertCall: InsertCall): Promise<Call>;
   updateCall(id: number, updates: Partial<Call>): Promise<Call>;
+  getCallById(id: string): Promise<Call | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -41,6 +42,14 @@ export class DatabaseStorage implements IStorage {
       .where(eq(calls.id, id))
       .returning();
     return call;
+  }
+
+  async getCallById(id: string): Promise<Call | undefined> {
+    const [call] = await db
+      .select()
+      .from(calls)
+      .where(eq(calls.id, parseInt(id)));
+    return call || undefined;
   }
 }
 

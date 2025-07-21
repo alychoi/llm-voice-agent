@@ -63,7 +63,7 @@ export class TwilioService {
       timeout: 30, // Longer timeout to allow for longer responses
       action: '/api/twilio/webhook/gather',
       method: 'POST',
-      speechTimeout: '5', // Wait 5 seconds of silence before processing
+      speechTimeout: '3', // Wait 5 seconds of silence before processing
       enhanced: true, // Use enhanced speech recognition
       language: 'en-US'
     });

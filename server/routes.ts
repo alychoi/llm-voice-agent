@@ -6,6 +6,9 @@ import { twilioService } from "./services/twilio";
 import { conversationService } from "./services/conversation";
 import { insertCallSchema } from "@shared/schema";
 import { z } from "zod";
+import twilio from "twilio";
+
+const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Call initiation endpoint
@@ -56,8 +59,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get call by ID
   app.get("/api/calls/:id", async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
-      res.status(404).json({ message: "Call not found" });
+      // const id = parseInt(req.params.id);
+      const id = req.params.id;
+      const call = await storage.getCallById(id);
+      if (!call) {
+        return res.status(404).json({ message: "Call not found" });
+      }
+      res.json(call);
     } catch (error) {
       console.error("Error fetching call:", error);
       res.status(500).json({ message: "Failed to fetch call" });
@@ -74,6 +82,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const initialMessage = "Hello! I am your interviewer for the Neo Scholars program. How are you doing today?";
       const twiml = twilioService.generateTwiML(initialMessage);
 
+      await conversationService.addTurn(CallSid, "assistant", initialMessage);
+
+      if ((global as any).wsService) {
+        (global as any).wsService.broadcastTranscriptUpdate(CallSid, {
+          speaker: "assistant",
+          content: initialMessage,
+          timestamp: new Date()
+        });
+      }
+
       res.type('text/xml');
       res.send(twiml);
     } catch (error) {
@@ -88,11 +106,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { SpeechResult, CallSid } = req.body;
       console.log("Twilio gather webhook:", { SpeechResult, CallSid });
 
-      let responseMessage = "Thank you for your input!";
+      let responseMessage = "Could you repeat that?";
       
       if (SpeechResult && SpeechResult.trim().length > 0) {
         // Use conversation service to maintain state
-        responseMessage = await conversationService.generateResponse(CallSid, SpeechResult);
+        // responseMessage = await conversationService.generateResponse(CallSid, SpeechResult);
+        const conversation = conversationService.getConversation(CallSid);
+        if (conversation?.queuedAssistantMessage) {
+          responseMessage = conversation.queuedAssistantMessage;
+          conversation.queuedAssistantMessage = undefined;
+          await conversationService.addTurn(CallSid, "assistant", responseMessage);
+        } else {
+          responseMessage = await conversationService.generateResponse(CallSid, SpeechResult);
+        }
         
         // Log the conversation for debugging
         console.log("User said:", SpeechResult);
@@ -100,16 +126,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log("Turn count:", conversationService.getTurnCount(CallSid));
         console.log("Call duration:", conversationService.getCallDuration(CallSid), "seconds");
 
+        // const userTurn = await conversationService.addTurn(CallSid, "user", SpeechResult);
+        // const assistantTurn = await conversationService.addTurn(CallSid, "assistant", responseMessage);
+
         // Broadcast transcript update to WebSocket clients
         if ((global as any).wsService) {
           (global as any).wsService.broadcastTranscriptUpdate(CallSid, {
+            // id: userTurn.id,
             speaker: "user",
             content: SpeechResult,
             timestamp: new Date()
           });
           
           (global as any).wsService.broadcastTranscriptUpdate(CallSid, {
-            speaker: "agent",
+            // id: assistantTurn.id,
+            speaker: "assistant",
             content: responseMessage,
             timestamp: new Date()
           });
@@ -146,6 +177,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           status: CallStatus,
           duration: CallDuration ? parseInt(CallDuration) : call.duration
         });
+      }
+
+      if (CallStatus === "completed" && (global as any).wsService) {
+        (global as any).wsService.broadcastCallEnd(CallSid);
       }
 
       res.status(200).send("OK");
@@ -203,6 +238,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { callId } = req.params;
       conversationService.endCall(callId);
+
+      const call = await storage.getCallById(callId);
+      if (!call) {
+        return res.status(404).json({ message: "Call not found" });
+      }
+
+      if (call.twilioCallSid) {
+        await client.calls(call.twilioCallSid).update({
+          status: "completed"
+        });
+      }
       
       // Broadcast call end to WebSocket clients
       if ((global as any).wsService) {
@@ -227,15 +273,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Add agent message to conversation
-      await conversationService.addTurn(callId, "agent", message);
+      await conversationService.addTurn(callId, "user", message);
+
+      const response = await conversationService.generateResponse(callId, message);
+
+      conversationService.queueAssistantMessage(callId, response);
+
+      // const call = await storage.getCallById(callId);
+      // if (!call) {
+      //   return res.status(404).json({ message: "Call not found" });
+      // }
+
+      // if (call.twilioCallSid) {
+      //   await client.calls(call.twilioCallSid).update({
+      //     twiml: 
+      //     `<Response>
+      //       <Say voice="alice">${response}</Say>
+      //       <Gather input="speech" action="/api/twilio/webhook/gather" method="POST" timeout="30" speechTimeout="3" enhanced="true" language="en-US">
+      //         <Say voice="alice">I'm listening. Please tell me more.</Say>
+      //       </Gather>
+      //       <Say voice="alice">Thank you for using the Neo Scholars voice agent. Goodbye!</Say>
+      //       <Hangup/>
+      //     </Response>`
+      //   });
+      // }
+
+      // const userTurn = await conversationService.addTurn(callId, "user", message);
 
       // Broadcast to WebSocket clients
       if ((global as any).wsService) {
         (global as any).wsService.broadcastTranscriptUpdate(callId, {
-          speaker: "agent",
+          // id: userTurn.id,
+          speaker: "user",
           content: message,
           timestamp: new Date()
         });
+        // (global as any).wsService.broadcastTranscriptUpdate(callId, {
+        //   speaker: "assistant",
+        //   content: response,
+        //   timestamp: new Date()
+        // });
       }
 
       res.json({ message: "Text sent successfully" });

@@ -1,8 +1,9 @@
 import { llmService } from "./llm";
+import { nanoid } from "nanoid";
 
 export interface ConversationTurn {
   id: string;
-  speaker: "user" | "agent";
+  speaker: "user" | "assistant";
   content: string;
   timestamp: Date;
 }
@@ -13,16 +14,17 @@ export interface ConversationState {
   turnCount: number;
   startTime: Date;
   lastActivity: Date;
+  queuedAssistantMessage?: string;
 }
 
 class ConversationService {
   private conversations = new Map<string, ConversationState>();
 
-  async addTurn(callId: string, speaker: "user" | "agent", content: string): Promise<void> {
+  async addTurn(callId: string, speaker: "user" | "assistant", content: string): Promise<ConversationTurn> {
     const conversation = this.getOrCreateConversation(callId);
     
     const turn: ConversationTurn = {
-      id: Date.now().toString(),
+      id: nanoid(),
       speaker,
       content,
       timestamp: new Date()
@@ -31,6 +33,12 @@ class ConversationService {
     conversation.turns.push(turn);
     conversation.turnCount = conversation.turns.length;
     conversation.lastActivity = new Date();
+
+    if ((global as any).wsService) {
+      (global as any).wsService.broadcastTranscriptUpdate(callId, turn);
+    }
+
+    return turn;
   }
 
   async generateResponse(callId: string, userInput: string): Promise<string> {
@@ -54,7 +62,7 @@ class ConversationService {
       console.log("LLM response received:", aiResponse);
       
       // Add agent turn
-      await this.addTurn(callId, "agent", aiResponse);
+      await this.addTurn(callId, "assistant", aiResponse);
 
       return aiResponse;
     } catch (error) {
@@ -83,6 +91,11 @@ class ConversationService {
     
     const now = new Date();
     return Math.floor((now.getTime() - conversation.startTime.getTime()) / 1000);
+  }
+
+  queueAssistantMessage(callId: string, message: string): void {
+    const conversation = this.getOrCreateConversation(callId);
+    conversation.queuedAssistantMessage = message;
   }
 
   private getOrCreateConversation(callId: string): ConversationState {

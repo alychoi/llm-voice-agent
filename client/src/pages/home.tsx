@@ -31,7 +31,7 @@ interface Call {
 
 interface TranscriptTurn {
   id: number;
-  speaker: "user" | "agent";
+  speaker: "user" | "assistant";
   content: string;
   timestamp: string;
 }
@@ -67,7 +67,8 @@ export default function Home() {
       const response = await apiRequest("POST", "/api/calls", data);
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (call: Call) => {
+      setActiveCall(call)
       toast({
         title: "Call initiated successfully",
         description: "The voice call has been started.",
@@ -163,6 +164,7 @@ export default function Home() {
   // Add WebSocket connection for real-time updates
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
   const [activeCall, setActiveCall] = useState<Call | null>(null);
+  const [liveDuration, setLiveDuration] = useState(0);
   const [callMetrics, setCallMetrics] = useState({
     turnCount: 0,
     duration: 0
@@ -170,8 +172,13 @@ export default function Home() {
 
   // WebSocket connection for live transcript
   useEffect(() => {
+    // console.log('window.location:', window.location);
+    // console.log('window.location.host:', window.location.host);
+    // console.log('window.location.hostname:', window.location.hostname);
+    // console.log('window.location.port:', window.location.port);
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
+    const host = window.location.host || 'localhost:3000';
+    const ws = new WebSocket(`${protocol}//${host}/api/ws`);
     
     ws.onopen = () => {
       console.log('WebSocket connected');
@@ -181,12 +188,18 @@ export default function Home() {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'transcript_update') {
-          setTranscript(prev => [...prev, data.turn]);
+          // setTranscript(prev => [...prev, data.turn]);
+          setTranscript(prev => {
+            if (prev.some(turn => turn.id === data.turn.id)) {
+              return prev;
+            }
+            return [...prev, data.turn];
+          })
           setCallMetrics({
             turnCount: data.turnCount,
             duration: data.callDuration
           });
-        } else if (data.type === 'call_ended') {
+        } else if (data.type === 'call_ended' || data.type === 'completed') {
           setActiveCall(null);
           setTranscript([]);
           setCallMetrics({ turnCount: 0, duration: 0 });
@@ -203,11 +216,25 @@ export default function Home() {
     ws.onclose = () => {
       console.log('WebSocket disconnected');
     };
+
+    if (!activeCall) {
+      setLiveDuration(0);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setLiveDuration(prev => prev + 1);
+    }, 1000)
     
     return () => {
       ws.close();
+      clearInterval(interval);
     };
-  }, []);
+  }, [activeCall]);
+
+  const sortedCalls = calls
+    ? [...calls].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    : [];
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -319,7 +346,7 @@ export default function Home() {
                         Turn {callMetrics.turnCount}
                       </span>
                       <span className="text-sm text-slate-500">
-                        {Math.floor(callMetrics.duration / 60)}:{(callMetrics.duration % 60).toString().padStart(2, '0')}
+                        {Math.floor(liveDuration / 60)}:{(liveDuration % 60).toString().padStart(2, '0')}
                       </span>
                     </div>
                   </div>
@@ -411,7 +438,7 @@ export default function Home() {
                   </div>
                 ) : calls && calls.length > 0 ? (
                   <div className="space-y-4">
-                    {calls.map((call) => (
+                    {sortedCalls.map((call) => (
                       <div key={call.id} className="flex items-center justify-between p-4 hover:bg-slate-50 rounded-lg transition-colors">
                         <div className="flex items-center space-x-3">
                           <div className="w-8 h-8 bg-slate-100 rounded-full flex items-center justify-center">
