@@ -63,7 +63,7 @@ export default function Home() {
 
   // Call initiation mutation
   const initiateCallMutation = useMutation({
-    mutationFn: async (data: { phoneNumber: string; message?: string }) => {
+    mutationFn: async (data: { phoneNumber: string; message?: string; systemPrompt?: string }) => {
       const response = await apiRequest("POST", "/api/calls", data);
       return response.json();
     },
@@ -75,6 +75,7 @@ export default function Home() {
       });
       queryClient.invalidateQueries({ queryKey: ["/api/calls"] });
       setPhoneNumber("");
+      setSystemPrompt("");
     },
     onError: (error: any) => {
       toast({
@@ -99,6 +100,7 @@ export default function Home() {
     initiateCallMutation.mutate({
       phoneNumber: phoneNumber.trim(),
       message: message.trim() || undefined,
+      systemPrompt: systemPrompt.trim() || undefined,
     });
   };
 
@@ -169,13 +171,12 @@ export default function Home() {
     turnCount: 0,
     duration: 0
   });
+  const [systemPrompt, setSystemPrompt] = useState(
+    `You are an AI agent.`
+  );
 
   // WebSocket connection for live transcript
   useEffect(() => {
-    // console.log('window.location:', window.location);
-    // console.log('window.location.host:', window.location.host);
-    // console.log('window.location.hostname:', window.location.hostname);
-    // console.log('window.location.port:', window.location.port);
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host || 'localhost:3000';
     const ws = new WebSocket(`${protocol}//${host}/api/ws`);
@@ -286,6 +287,20 @@ export default function Home() {
                       />
                     </div>
                     <p className="mt-1 text-xs text-slate-500">Include country code (e.g., +1 for US)</p>
+                  </div>
+
+                  <div className="mb-4">
+                    <Label htmlFor="systemPrompt" className="text-sm font-medium text-slate-700">
+                      System Prompt (Optional)
+                    </Label>
+                    <Textarea
+                      id="systemPrompt"
+                      placeholder="You are an AI agent."
+                      value={systemPrompt}
+                      onChange={(e) => setSystemPrompt(e.target.value)}
+                      rows={3}
+                      className="mt-2"
+                    />
                   </div>
 
                   <div>

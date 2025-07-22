@@ -1,5 +1,6 @@
 import { llmService } from "./llm";
 import { nanoid } from "nanoid";
+import { DEFAULT_PROMPT } from "../config";
 
 export interface ConversationTurn {
   id: string;
@@ -14,6 +15,7 @@ export interface ConversationState {
   turnCount: number;
   startTime: Date;
   lastActivity: Date;
+  systemPrompt?: string;
   queuedAssistantMessage?: string;
 }
 
@@ -48,6 +50,8 @@ class ConversationService {
       // Add user turn
       await this.addTurn(callId, "user", userInput);
 
+      const systemPrompt = conversation.systemPrompt || DEFAULT_PROMPT;
+
       // Convert conversation history to LLM format
       const pastTurns = conversation.turns.map(turn => ({
         role: turn.speaker as "user" | "assistant",
@@ -57,7 +61,7 @@ class ConversationService {
       console.log("Calling LLM with past turns:", pastTurns.length);
       
       // Get AI response
-      const aiResponse = await llmService.getAgentReply(pastTurns);
+      const aiResponse = await llmService.getAgentReply(pastTurns, systemPrompt);
       
       console.log("LLM response received:", aiResponse);
       
@@ -98,15 +102,19 @@ class ConversationService {
     conversation.queuedAssistantMessage = message;
   }
 
-  private getOrCreateConversation(callId: string): ConversationState {
+  public getOrCreateConversation(callId: string, systemPrompt?: string): ConversationState {
     if (!this.conversations.has(callId)) {
       this.conversations.set(callId, {
         callId,
         turns: [],
         turnCount: 0,
         startTime: new Date(),
-        lastActivity: new Date()
+        lastActivity: new Date(),
+        systemPrompt
       });
+    } else {
+      const existing = this.conversations.get(callId)!;
+      console.log("Returning existing conversation with systemPrompt:", existing.systemPrompt);
     }
     return this.conversations.get(callId)!;
   }

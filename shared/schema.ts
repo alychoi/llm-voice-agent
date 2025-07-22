@@ -6,6 +6,7 @@ export const calls = pgTable("calls", {
   id: serial("id").primaryKey(),
   phoneNumber: varchar("phone_number", { length: 20 }).notNull(),
   message: text("message"),
+  systemPrompt: text("system_prompt"),
   status: varchar("status", { length: 20 }).notNull().default("pending"),
   duration: integer("duration").default(0),
   twilioCallSid: varchar("twilio_call_sid", { length: 100 }),
@@ -16,6 +17,7 @@ export const calls = pgTable("calls", {
 export const insertCallSchema = createInsertSchema(calls).pick({
   phoneNumber: true,
   message: true,
+  systemPrompt: true,
 }).extend({
   status: z.string().optional(),
 });
