@@ -263,6 +263,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Message is required" });
       }
 
+      let conversation = conversationService.getConversation(callId);
+      if (!conversation) {
+        // Fetch from DB
+        const call = await storage.getCallById(callId);
+        conversation = conversationService.getOrCreateConversation(
+          callId,
+          call?.systemPrompt || undefined
+        );
+      }
+
       const response = await conversationService.generateResponse(callId, message);
 
       conversationService.queueAssistantMessage(callId, response);
