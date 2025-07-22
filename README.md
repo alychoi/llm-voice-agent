@@ -58,6 +58,8 @@
 - **Short-Term Conversation State:**
   - Each call’s state (turns, prompt, etc.) is stored in memory for fast access and context-aware LLM replies.
 
+- Note: I used Cursor and ChatGPT.
+
 ### Prerequisites
 
 - Node.js 18+ 
